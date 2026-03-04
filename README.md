@@ -233,6 +233,30 @@ npm run tauri build -- --bundles nsis
 | [ClawApp](https://github.com/qingchencloud/clawapp) | 跨平台移动聊天客户端 |
 | [cftunnel](https://github.com/qingchencloud/cftunnel) | Cloudflare Tunnel 内网穿透工具 |
 
+## 社区交流
+
+加入社区，交流使用心得、反馈问题、获取最新动态。
+
+<p align="center">
+  <img src="docs/qr-qq.png" width="200" alt="QQ 群二维码">
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/qr-wechat.png" width="200" alt="微信群二维码">
+</p>
+<p align="center">
+  <strong>QQ 交流群</strong>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <strong>微信交流群</strong>
+</p>
+
+| 渠道 | 链接 |
+|------|------|
+| QQ 群 | [点击加入](https://qt.cool/c/OpenClaw) |
+| 微信群 | [点击加入](https://qt.cool/c/OpenClawWx) |
+| Discord | [加入 Discord](https://discord.gg/U9AttmsNHh) |
+| 元宝派 | [加入元宝派](https://yb.tencent.com/gp/i/LsvIw7mdR7Lb) |
+| GitHub Discussions | [参与讨论](https://github.com/qingchencloud/clawpanel/discussions) |
+| 反馈 Issue | [提交 Issue](https://github.com/qingchencloud/clawpanel/issues/new) |
+
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request。贡献流程详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
