@@ -142,7 +142,6 @@ async function _tryR2Install(version, source, logs) {
   const r2 = r2Config()
   if (!r2.enabled || !r2.baseUrl) return false
   const platform = r2PlatformKey()
-  if (platform === 'unknown') return false
 
   logs.push('尝试从 CDN 加速下载...')
   const manifestUrl = `${r2.baseUrl}/latest.json`
@@ -151,95 +150,120 @@ async function _tryR2Install(version, source, logs) {
   const manifest = await resp.json()
 
   const sourceKey = source === 'official' ? 'official' : 'chinese'
-  const asset = manifest?.[sourceKey]?.assets?.[platform]
-  if (!asset?.url) throw new Error(`CDN 无 ${sourceKey}/${platform} 归档`)
+  const sourceObj = manifest?.[sourceKey]
+  if (!sourceObj) throw new Error(`CDN 无 ${sourceKey} 配置`)
 
-  const cdnVersion = manifest?.[sourceKey]?.version || version
+  const cdnVersion = sourceObj.version || version
   if (version !== 'latest' && !versionsMatch(cdnVersion, version)) {
     throw new Error(`CDN 版本 ${cdnVersion} 与请求版本 ${version} 不匹配`)
   }
 
-  const sizeMb = asset.size ? `${(asset.size / 1048576).toFixed(0)}MB` : '未知大小'
-  logs.push(`CDN 下载: ${cdnVersion} (${platform}, ${sizeMb})`)
+  // 优先通用 tarball（npm pack 产物，~50MB，全平台通用），其次平台特定 assets
+  const tarball = sourceObj.tarball
+  const asset = sourceObj.assets?.[platform]
+  const useTarball = !!tarball?.url
+
+  if (!useTarball && !asset?.url) {
+    if (platform === 'unknown') throw new Error('当前平台不支持 R2 加速')
+    throw new Error(`CDN 无 ${sourceKey}/${platform} 归档`)
+  }
+
+  const archiveUrl = useTarball ? tarball.url : asset.url
+  const expectedSha = useTarball ? (tarball.sha256 || '') : (asset.sha256 || '')
+  const expectedSize = useTarball ? (tarball.size || 0) : (asset.size || 0)
+  const sizeMb = expectedSize ? `${(expectedSize / 1048576).toFixed(0)}MB` : '未知大小'
+  const mode = useTarball ? '通用 tarball' : `${platform} 预装归档`
+  logs.push(`CDN 下载: ${cdnVersion} (${mode}, ${sizeMb})`)
 
   // 下载到临时文件
-  const tmpPath = path.join(os.tmpdir(), `openclaw-${platform}.tgz`)
-  const dlResp = await globalThis.fetch(asset.url, { signal: AbortSignal.timeout(300000) })
+  const tmpPath = path.join(os.tmpdir(), `openclaw-cdn.tgz`)
+  const dlResp = await globalThis.fetch(archiveUrl, { signal: AbortSignal.timeout(300000) })
   if (!dlResp.ok) throw new Error(`CDN 下载失败 (HTTP ${dlResp.status})`)
   const buffer = Buffer.from(await dlResp.arrayBuffer())
   fs.writeFileSync(tmpPath, buffer)
 
   // SHA256 校验
-  if (asset.sha256) {
+  if (expectedSha) {
     const crypto = require('crypto')
     const hash = crypto.createHash('sha256').update(buffer).digest('hex')
-    if (hash !== asset.sha256) {
+    if (hash !== expectedSha) {
       fs.unlinkSync(tmpPath)
-      throw new Error(`SHA256 校验失败: 期望 ${asset.sha256}, 实际 ${hash}`)
+      throw new Error(`SHA256 校验失败: 期望 ${expectedSha}, 实际 ${hash}`)
     }
     logs.push('SHA256 校验通过 ✓')
   }
 
-  // 确定 npm 全局 node_modules 目录
-  let modulesDir
-  if (isWindows) {
-    modulesDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules')
-  } else if (isMac) {
-    modulesDir = fs.existsSync('/opt/homebrew/lib/node_modules')
-      ? '/opt/homebrew/lib/node_modules'
-      : '/usr/local/lib/node_modules'
-  } else {
+  if (useTarball) {
+    // 通用 tarball 模式：npm install -g ./file.tgz（全平台通用，npm 自动处理原生模块）
+    logs.push('通用 tarball 模式，执行 npm install...')
+    const npmBin = isWindows ? 'npm.cmd' : 'npm'
     try {
-      const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000 }).trim()
-      modulesDir = path.join(prefix, 'lib', 'node_modules')
-    } catch {
-      modulesDir = '/usr/local/lib/node_modules'
+      execSync(`${npmBin} install -g "${tmpPath}" --force 2>&1`, { timeout: 120000, windowsHide: true })
+      logs.push('npm install 完成 ✓')
+    } catch (e) {
+      try { fs.unlinkSync(tmpPath) } catch {}
+      throw new Error('npm install -g tarball 失败: ' + (e.stderr?.toString() || e.message).slice(-300))
     }
-  }
-  if (!fs.existsSync(modulesDir)) fs.mkdirSync(modulesDir, { recursive: true })
-
-  // 清理旧目录
-  const qcDir = path.join(modulesDir, '@qingchencloud')
-  if (fs.existsSync(qcDir)) fs.rmSync(qcDir, { recursive: true, force: true })
-
-  // 解压
-  logs.push(`解压到 ${modulesDir}`)
-  execSync(`tar -xzf "${tmpPath}" -C "${modulesDir}"`, { timeout: 60000, windowsHide: true })
-
-  // 归档内目录可能是 qingchencloud/（Windows tar 不支持 @ 前缀），需要重命名
-  const noAtDir = path.join(modulesDir, 'qingchencloud')
-  if (fs.existsSync(noAtDir) && !fs.existsSync(qcDir)) {
-    fs.renameSync(noAtDir, qcDir)
-    logs.push('目录已修正: qingchencloud → @qingchencloud')
-  }
-
-  // 创建 bin 链接
-  let binDir
-  if (isWindows) {
-    binDir = path.join(process.env.APPDATA || '', 'npm')
-  } else if (isMac) {
-    binDir = fs.existsSync('/opt/homebrew/bin') ? '/opt/homebrew/bin' : '/usr/local/bin'
   } else {
-    try {
-      const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000 }).trim()
-      binDir = path.join(prefix, 'bin')
-    } catch {
-      binDir = '/usr/local/bin'
-    }
-  }
-  const openclawJs = path.join(modulesDir, '@qingchencloud', 'openclaw-zh', 'bin', 'openclaw.js')
-  if (fs.existsSync(openclawJs)) {
+    // 平台特定归档模式：直接解压到 npm 全局 node_modules
+    let modulesDir
     if (isWindows) {
-      const cmdContent = `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "${openclawJs}" %*\r\n`
-      fs.writeFileSync(path.join(binDir, 'openclaw.cmd'), cmdContent)
+      modulesDir = path.join(process.env.APPDATA || '', 'npm', 'node_modules')
+    } else if (isMac) {
+      modulesDir = fs.existsSync('/opt/homebrew/lib/node_modules')
+        ? '/opt/homebrew/lib/node_modules'
+        : '/usr/local/lib/node_modules'
     } else {
-      const linkPath = path.join(binDir, 'openclaw')
-      try { fs.unlinkSync(linkPath) } catch {}
-      fs.symlinkSync(openclawJs, linkPath)
-      try { fs.chmodSync(openclawJs, 0o755) } catch {}
-      try { fs.chmodSync(linkPath, 0o755) } catch {}
+      try {
+        const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000 }).trim()
+        modulesDir = path.join(prefix, 'lib', 'node_modules')
+      } catch {
+        modulesDir = '/usr/local/lib/node_modules'
+      }
     }
-    logs.push('bin 链接已创建 ✓')
+    if (!fs.existsSync(modulesDir)) fs.mkdirSync(modulesDir, { recursive: true })
+
+    const qcDir = path.join(modulesDir, '@qingchencloud')
+    if (fs.existsSync(qcDir)) fs.rmSync(qcDir, { recursive: true, force: true })
+
+    logs.push(`解压到 ${modulesDir}`)
+    execSync(`tar -xzf "${tmpPath}" -C "${modulesDir}"`, { timeout: 60000, windowsHide: true })
+
+    // 归档内目录可能是 qingchencloud/（Windows tar 不支持 @ 前缀），需要重命名
+    const noAtDir = path.join(modulesDir, 'qingchencloud')
+    if (fs.existsSync(noAtDir) && !fs.existsSync(qcDir)) {
+      fs.renameSync(noAtDir, qcDir)
+      logs.push('目录已修正: qingchencloud → @qingchencloud')
+    }
+
+    // 创建 bin 链接
+    let binDir
+    if (isWindows) {
+      binDir = path.join(process.env.APPDATA || '', 'npm')
+    } else if (isMac) {
+      binDir = fs.existsSync('/opt/homebrew/bin') ? '/opt/homebrew/bin' : '/usr/local/bin'
+    } else {
+      try {
+        const prefix = execSync('npm config get prefix', { encoding: 'utf8', timeout: 5000 }).trim()
+        binDir = path.join(prefix, 'bin')
+      } catch {
+        binDir = '/usr/local/bin'
+      }
+    }
+    const openclawJs = path.join(modulesDir, '@qingchencloud', 'openclaw-zh', 'bin', 'openclaw.js')
+    if (fs.existsSync(openclawJs)) {
+      if (isWindows) {
+        const cmdContent = `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "${openclawJs}" %*\r\n`
+        fs.writeFileSync(path.join(binDir, 'openclaw.cmd'), cmdContent)
+      } else {
+        const linkPath = path.join(binDir, 'openclaw')
+        try { fs.unlinkSync(linkPath) } catch {}
+        fs.symlinkSync(openclawJs, linkPath)
+        try { fs.chmodSync(openclawJs, 0o755) } catch {}
+        try { fs.chmodSync(linkPath, 0o755) } catch {}
+      }
+      logs.push('bin 链接已创建 ✓')
+    }
   }
 
   // 清理临时文件
