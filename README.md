@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <strong>🇨🇳 中文</strong> | <a href="README.en.md">🇺🇸 English</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/qingchencloud/clawpanel/releases/latest">
     <img src="https://img.shields.io/github/v/release/qingchencloud/clawpanel?style=flat-square&color=6366f1" alt="Release">
   </a>
